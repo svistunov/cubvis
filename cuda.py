@@ -24,8 +24,7 @@ TODO:
     blender:
         create configuration window
         create separated export to very simple format
-    create readme
-    use texture memory for cuda
+    use 2d texture memory for cuda
     write comments
 """
 
@@ -217,7 +216,7 @@ class CudaRender:
         self.make_buffer('ind', self.indexes, GL_ELEMENT_ARRAY_BUFFER)
         if (not self.calculated_vis):
             self.make_cuda_buffer('aVis')
-            self.make_cuda_buffer('aPos')
+            #self.make_cuda_buffer('aPos')
             #self.make_cuda_buffer('ind')
         
     def create_shaders(self):
@@ -291,25 +290,34 @@ class CudaRender:
           )
         self.cuda_module = SourceModule(kernel_code)
         self.cuda_call = self.cuda_module.get_function("vis")
-        self.cuda_call.prepare("PPP", (256, 1, 1))
+        self.cuda_call.prepare("P", (256, 1, 1))
         
     def cuda_get_memory(self):
         self.grid_dimensions =  (min(32, (self.vis.size+256-1) // 256 ), 1)
         self.cuda_mem = {}
-        self.cuda_mem['normals_gpu'] = cuda_driver.mem_alloc(self.normals.nbytes)
-        cuda_driver.memcpy_htod(self.cuda_mem['normals_gpu'], self.normals)
+        #self.cuda_mem['normals_gpu'] = cuda_driver.mem_alloc(self.normals.nbytes)
+        #cuda_driver.memcpy_htod(self.cuda_mem['normals_gpu'], self.normals)
         self.cuda_mem['design_gpu'] = self.cuda_module.get_global('design')[0]
         cuda_driver.memcpy_htod(self.cuda_mem['design_gpu'], self.design)
         self.cuda_mem['kernel_n'] = self.cuda_module.get_global('kernelN')[0]
+        self.put_data_to_cudatex(self.normals, 'n_tex')
+        self.put_data_to_cudatex(self.verts, 'v_tex')
+        
+    def put_data_to_cudatex(self, data, name):
+        if (not name in self.cuda_mem):
+            self.cuda_mem[name] = self.cuda_module.get_texref(name)
+        self.cuda_mem[name + '_gpu'] = cuda_driver.to_device(data)
+        self.cuda_mem[name].set_address(self.cuda_mem[name + '_gpu'], data.nbytes)
+        self.cuda_mem[name].set_format(cuda_driver.array_format.FLOAT, 1)
         
     def cuda_map(self):
         self.cuda_mem['map_vis'] = self.cuda_buffers['aVis'].map()
-        self.cuda_mem['map_pos'] = self.cuda_buffers['aPos'].map()
+        #self.cuda_mem['map_pos'] = self.cuda_buffers['aPos'].map()
         
     def cuda_unmap(self):
         cuda_driver.Context.synchronize()
         self.cuda_mem['map_vis'].unmap()
-        self.cuda_mem['map_pos'].unmap()
+        #self.cuda_mem['map_pos'].unmap()
     
     def cuda_free_memory(self):
         pass
@@ -317,8 +325,9 @@ class CudaRender:
     def cuda_call_kernal_step(self, step):
         self.start.record()
         cuda_driver.memcpy_htod(self.cuda_mem['kernel_n'],  numpy.array([step]).astype(numpy.int32))
-        self.cuda_call.prepared_call(self.grid_dimensions, self.cuda_mem['map_vis'].device_ptr(), \
-            self.cuda_mem['map_pos'].device_ptr(), self.cuda_mem['normals_gpu'])
+        self.cuda_call.prepared_call(self.grid_dimensions, self.cuda_mem['map_vis'].device_ptr()
+            #self.cuda_mem['map_pos'].device_ptr(), self.cuda_mem['normals_gpu']
+            )
         self.end.record()
         self.end.synchronize()
         #cuda_driver.Context.synchronize() # ????/???/
