@@ -1,8 +1,14 @@
+#raw
 #define EPSILON 0.000001f
+#end raw
 
 texture<float, 1, cudaReadModeElementType> v_tex;
 
 texture<float, 1, cudaReadModeElementType> n_tex;
+
+__device__ __constant__ float design[$dN];
+
+__device__ __constant__ int kernelN;
 
 inline __host__ __device__ float3 operator*(float3 a, float b) {
     return make_float3(a.x * b, a.y * b, a.z * b);
@@ -27,7 +33,7 @@ inline __device__ float3 make_vert(float *V, int i) {
     return make_float3(V[i], V[i+1], V[i+2]);
 }
 
-inline __device__ float3 make_texvert(texture<float, 1, cudaReadModeElementType> t, int i) {
+inline __device__ float3 make_tex1dvert(texture<float, 1, cudaReadModeElementType> t, int i) {
     return make_float3(tex1Dfetch(t, i), tex1Dfetch(t, i+1), tex1Dfetch(t, i+2));
 }
 
@@ -35,7 +41,7 @@ inline __device__ float3 make_shift_point(float *V, int i, float3 normal, float 
     return make_float3(V[i]+normal.x*val, V[i+1]+normal.y*val, V[i+2]+normal.z*val);
 }
 
-inline __device__ float3 make_texshift_point(texture<float, 1, cudaReadModeElementType> t, int i, float3 normal, float val) {
+inline __device__ float3 make_tex1dshift_point(texture<float, 1, cudaReadModeElementType> t, int i, float3 normal, float val) {
     return make_float3(tex1Dfetch(t, i)+normal.x*val, tex1Dfetch(t, i+1)+normal.y*val, tex1Dfetch(t, i+2)+normal.z*val);
 }
 
@@ -67,38 +73,4 @@ __device__ int intr_tringle(float3 v0, float3 edge1, float3 edge2, float3 orig, 
         return 1;
         
     return 0;
-}
-
-__device__ int intersect(float3 point, float3 dir) {
-    for (int i = 0; i < $vN; i +=9) {
-            float3 v0 = make_texvert(v_tex, i);
-            float3 edge1 = make_texvert(v_tex, i+3) - v0;
-            float3 edge2 = make_texvert(v_tex, i+6) - v0;
-            if (intr_tringle(v0, edge1, edge2, point, dir) == 0) {
-                return 0;
-            }
-    }
-    return 1;
-}
-
-
-__device__ __constant__ float design[$dN];
-__device__ __constant__ int kernelN;
-
-__global__ void vis(float *Vis) {
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    int ind = tid*3;
-    while (tid < $visN) {
-        float sum = 0.0f;
-        float3 normal = make_texvert(n_tex, ind);
-        for (int i = kernelN; i < (kernelN + $kernelStep); i+=4) {
-            float3 dir = make_vert(design, i);
-            if (dot(normal, dir) > 0) {
-                float3 point = make_texshift_point(v_tex, ind, normal, 1.1f);
-                sum += design[i+3]*intersect(point,dir);
-            }
-        }
-        Vis[tid] += 2*sum;//TODO: correct 2* -- wrong
-        tid += blockDim.x * gridDim.x;
-    }
 }

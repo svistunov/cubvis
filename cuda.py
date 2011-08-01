@@ -45,10 +45,13 @@ class CudaRender:
         self.timebase = 0
         self.calculated_vis = False
         self.from_files = {'model' : False, 'cudaRes': False}
-        self.kernel_step = 8
+        self.kernel_step = 4
         self.secs = 0
         self.cuda_stop = False
         self.live = True
+        self.types = {'global' : 'Bruteforce method use global memory',
+                      '1dtex': 'Bruteforce method use 1D texture memory'}
+        self.type = '1dtex' # 'global'
         
     def create_events(self):
         self.start = cuda_driver.Event()
@@ -57,9 +60,9 @@ class CudaRender:
     def load_models_from_blender(self):
         self.objs = Blender.Object.GetSelected()
         if self.objs:
-            self.verts = numpy.array([]).astype(numpy.float32)
-            self.normals = numpy.array([]).astype(numpy.float32)
-            self.indexes = numpy.array([]).astype(numpy.ushort)
+            self.verts = []
+            self.normals = []
+            self.indexes = []
             index_offset = 0
             for obj in self.objs:
                 mesh = obj.getData(mesh=True)
@@ -67,12 +70,15 @@ class CudaRender:
                 mesh.transform(obj.getMatrix())
                 counter = 0
                 for face in mesh.faces:
-                    self.indexes = numpy.append(self.indexes, range(index_offset + counter,index_offset + counter + 3)).astype(numpy.ushort)
+                    self.indexes.extend(range(index_offset + counter,index_offset + counter + 3))
                     counter += 3
                     for v in face.v:
-                        self.verts = numpy.append(self.verts, v.co).astype(numpy.float32)
-                        self.normals = numpy.append(self.normals, face.no).astype(numpy.float32)
-                index_offset = self.indexes.max() + 1
+                        self.verts.extend(v.co)
+                        self.normals.extend(face.no)
+                index_offset = max(self.indexes) + 1
+            self.verts = numpy.asarray(self.verts).astype(numpy.float32)
+            self.indexes = numpy.asarray(self.indexes).astype(numpy.ushort)
+            self.normals = numpy.asarray(self.normals).astype(numpy.float32)
         
     def save_models_data_to_files(self):
         numpy.savetxt("data/verts.dat", self.verts)
@@ -168,6 +174,7 @@ class CudaRender:
                 self.cuda_print_secs()
                 self.cuda_free_memory()
                 self.calculated_vis = True
+                self.save_cuda_res_to_files()
     
     def display(self):
         self.cuda_from_display()
@@ -216,7 +223,8 @@ class CudaRender:
         self.make_buffer('ind', self.indexes, GL_ELEMENT_ARRAY_BUFFER)
         if (not self.calculated_vis):
             self.make_cuda_buffer('aVis')
-            #self.make_cuda_buffer('aPos')
+            if (self.type == 'global'):
+            	self.make_cuda_buffer('aPos')
             #self.make_cuda_buffer('ind')
         
     def create_shaders(self):
@@ -283,27 +291,35 @@ class CudaRender:
         
     #TODO: optim block size and grid size
     def init_cuda(self):
-        template_params = {'dN' : self.design.size, 'visN': self.vis.size, 'vN' : self.verts.size, 'kernelStep' : self.kernel_step}
+        template_params = {'dN' : self.design.size,
+                           'visN': self.vis.size, 'vN' : self.verts.size,
+                           'kernelStep' : self.kernel_step}
         kernel_code = Template(
-            file = 'vis.cu', 
+            file = 'cu/vis_%s.cu' % (self.type), 
             searchList = [template_params],
           )
         self.cuda_module = SourceModule(kernel_code)
         self.cuda_call = self.cuda_module.get_function("vis")
-        self.cuda_call.prepare("P", (256, 1, 1))
+        self.block_seize = (256, 1, 1)
+        if (self.type == 'global'):
+             self.cuda_call.prepare("PPP", self.block_seize)
+        if (self.type == '1dtex'):
+            self.cuda_call.prepare("P", self.block_seize)
         
     def cuda_get_memory(self):
         self.grid_dimensions =  (min(32, (self.vis.size+256-1) // 256 ), 1)
         self.cuda_mem = {}
-        #self.cuda_mem['normals_gpu'] = cuda_driver.mem_alloc(self.normals.nbytes)
-        #cuda_driver.memcpy_htod(self.cuda_mem['normals_gpu'], self.normals)
+        if (self.type == 'global'):
+            self.cuda_mem['normals_gpu'] = cuda_driver.mem_alloc(self.normals.nbytes)
+            cuda_driver.memcpy_htod(self.cuda_mem['normals_gpu'], self.normals)
         self.cuda_mem['design_gpu'] = self.cuda_module.get_global('design')[0]
         cuda_driver.memcpy_htod(self.cuda_mem['design_gpu'], self.design)
         self.cuda_mem['kernel_n'] = self.cuda_module.get_global('kernelN')[0]
-        self.put_data_to_cudatex(self.normals, 'n_tex')
-        self.put_data_to_cudatex(self.verts, 'v_tex')
+        if (self.type == '1dtex'):
+            self.put_data_to_cuda1dtex(self.normals, 'n_tex')
+            self.put_data_to_cuda1dtex(self.verts, 'v_tex')
         
-    def put_data_to_cudatex(self, data, name):
+    def put_data_to_cuda1dtex(self, data, name):
         if (not name in self.cuda_mem):
             self.cuda_mem[name] = self.cuda_module.get_texref(name)
         self.cuda_mem[name + '_gpu'] = cuda_driver.to_device(data)
@@ -312,22 +328,30 @@ class CudaRender:
         
     def cuda_map(self):
         self.cuda_mem['map_vis'] = self.cuda_buffers['aVis'].map()
-        #self.cuda_mem['map_pos'] = self.cuda_buffers['aPos'].map()
+        if (self.type == 'global'):
+            self.cuda_mem['map_pos'] = self.cuda_buffers['aPos'].map()
         
     def cuda_unmap(self):
         cuda_driver.Context.synchronize()
         self.cuda_mem['map_vis'].unmap()
-        #self.cuda_mem['map_pos'].unmap()
+        if (self.type == 'global'):
+            self.cuda_mem['map_pos'].unmap()
     
     def cuda_free_memory(self):
         pass
+
+    def cuda_call_kernel_global(self):
+        self.cuda_call.prepared_call(self.grid_dimensions, self.cuda_mem['map_vis'].device_ptr(),
+            self.cuda_mem['map_pos'].device_ptr(), self.cuda_mem['normals_gpu']
+            )
         
+    def cuda_call_kernel_1dtex(self):
+        self.cuda_call.prepared_call(self.grid_dimensions, self.cuda_mem['map_vis'].device_ptr())
+
     def cuda_call_kernal_step(self, step):
         self.start.record()
         cuda_driver.memcpy_htod(self.cuda_mem['kernel_n'],  numpy.array([step]).astype(numpy.int32))
-        self.cuda_call.prepared_call(self.grid_dimensions, self.cuda_mem['map_vis'].device_ptr()
-            #self.cuda_mem['map_pos'].device_ptr(), self.cuda_mem['normals_gpu']
-            )
+        getattr(self, 'cuda_call_kernel_' + self.type)()
         self.end.record()
         self.end.synchronize()
         #cuda_driver.Context.synchronize() # ????/???/
