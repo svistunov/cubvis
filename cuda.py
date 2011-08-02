@@ -50,7 +50,8 @@ class CudaRender:
         self.cuda_stop = False
         self.live = True
         self.types = {'global' : 'Bruteforce method use global memory',
-                      '1dtex': 'Bruteforce method use 1D texture memory'}
+                      '1dtex': 'Bruteforce method use 1D texture memory',
+                      '2dtex': 'Bruteforce method use 2D texture memory',}
         self.type = '1dtex' # 'global'
         
     def create_events(self):

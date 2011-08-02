@@ -20,7 +20,7 @@ __global__ void vis(float *Vis) {
         float3 normal = make_tex1dvert(n_tex, ind);
         for (int i = kernelN; i < (kernelN + $kernelStep); i+=4) {
             float3 dir = make_vert(design, i);
-            if (dot(normal, dir) > 0) {
+            if (dot(normal, dir) > -0.01f) { 
                 float3 point = make_tex1dshift_point(v_tex, ind, normal, 1.1f);
                 sum += design[i+3]*intersect(point,dir);
             }
