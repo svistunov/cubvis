@@ -1,4 +1,4 @@
-#include "cu/common.cu"
+#include source="$p/cu/common.cu"
 
 __device__ int intersect(float *V, float3 point, float3 dir) {
     for (int i = 0; i < $vN; i +=9) {

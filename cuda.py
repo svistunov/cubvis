@@ -1,3 +1,12 @@
+#!BPY
+
+"""
+# Name: 'Cuda visibility'
+# Blender: 249
+# Group: 'Render'
+# Tooltip: 'Cuda experiment'
+"""
+
 # -*- coding: utf-8 -*-
 load_cuda = True
 import Blender
@@ -16,6 +25,20 @@ if (load_cuda):
 import os
 from Cheetah.Template import Template
 
+p = os.path.join('bpydata', 'cuda')
+
+#udatadir, datadir, uscriptsdir, scriptsdir
+def getDataPath():
+    global p
+    data_dir = None
+    if (Blender.Get("udatadir")):
+        data_dir = Blender.Get("udatadir")
+    elif (Blender.Get("datadir")):
+        data_dir = Blender.Get("datadir")
+    if (os.path.exists(os.path.join(data_dir, 'cuda'))):
+        p = os.path.join(data_dir, 'cuda')
+
+getDataPath()
 
 """
 TODO:
@@ -49,10 +72,7 @@ class CudaRender:
         self.secs = 0
         self.cuda_stop = False
         self.live = True
-        self.types = {'global' : 'Bruteforce method use global memory',
-                      '1dtex': 'Bruteforce method use 1D texture memory',
-                      '2dtex': 'Bruteforce method use 2D texture memory',}
-        self.type = '1dtex' # 'global'
+        self.memory_type = '1dtex' # 'global'
         
     def create_events(self):
         self.start = cuda_driver.Event()
@@ -82,24 +102,24 @@ class CudaRender:
             self.normals = numpy.asarray(self.normals).astype(numpy.float32)
         
     def save_models_data_to_files(self):
-        numpy.savetxt("data/verts.dat", self.verts)
-        numpy.savetxt("data/normals.dat", self.normals)
-        numpy.savetxt("data/indexes.dat", self.indexes)
+        numpy.savetxt(os.path.join(p, 'data', 'verts.dat'), self.verts)
+        numpy.savetxt(os.path.join(p, 'data', 'normals.dat'), self.normals)
+        numpy.savetxt(os.path.join(p, 'data', 'indexes.dat'), self.indexes)
     
     def save_cuda_res_to_files(self):
-        numpy.savetxt("data/vis.dat", self.vis)
+        numpy.savetxt(os.path.join(p, 'data', 'vis.dat'), self.vis)
         
     def load_cuda_res_from_files(self):
-        self.vis = numpy.loadtxt("data/vis.dat").astype(numpy.float32)
+        self.vis = numpy.loadtxt(os.path.join(p, 'data', 'vis.dat')).astype(numpy.float32)
         
     def load_models_from_files(self):
-        self.verts = numpy.loadtxt("data/verts.dat").astype(numpy.float32)
-        self.normals = numpy.loadtxt("data/normals.dat").astype(numpy.float32)
-        self.indexes = numpy.loadtxt("data/indexes.dat").astype(numpy.ushort)
+        self.verts = numpy.loadtxt(os.path.join(p, 'data', 'verts.dat')).astype(numpy.float32)
+        self.normals = numpy.loadtxt(os.path.join(p, 'data', 'normals.dat')).astype(numpy.float32)
+        self.indexes = numpy.loadtxt(os.path.join(p, 'data', 'indexes.dat')).astype(numpy.ushort)
     
     def load(self):
         self.load_cam()
-        self.design = numpy.loadtxt('data/des3d_240_21.txt').astype(numpy.float32)
+        self.design = numpy.loadtxt(os.path.join(p, 'data', 'des3d_240_21.txt')).astype(numpy.float32)
         if (self.from_files['model']):
             self.load_models_from_files()
         else:
@@ -224,8 +244,8 @@ class CudaRender:
         self.make_buffer('ind', self.indexes, GL_ELEMENT_ARRAY_BUFFER)
         if (not self.calculated_vis):
             self.make_cuda_buffer('aVis')
-            if (self.type == 'global'):
-            	self.make_cuda_buffer('aPos')
+            if (self.memory_type == 'global'):
+                self.make_cuda_buffer('aPos')
             #self.make_cuda_buffer('ind')
         
     def create_shaders(self):
@@ -234,7 +254,7 @@ class CudaRender:
         self.shaders['vertex'] = glCreateShader(GL_VERTEX_SHADER)
         self.shaders['fragment'] = glCreateShader(GL_FRAGMENT_SHADER)
         for (name,shader) in self.shaders.iteritems():
-            source = open(name + '.glsl').read()
+            source = open(os.path.join(p, 'glsl', name + '.glsl')).read()
             glShaderSource(shader, source)
             glCompileShader(shader)
         self.program = glCreateProgram()
@@ -292,31 +312,32 @@ class CudaRender:
         
     #TODO: optim block size and grid size
     def init_cuda(self):
-        template_params = {'dN' : self.design.size,
+        inc = {'common': os.path.join(p,'cu', 'common.cu')}
+        template_params = {'inc': inc, 'dN' : self.design.size,
                            'visN': self.vis.size, 'vN' : self.verts.size,
                            'kernelStep' : self.kernel_step}
         kernel_code = Template(
-            file = 'cu/vis_%s.cu' % (self.type), 
+            file = os.path.join(p, 'cu', 'vis_%s.cu' % (self.memory_type)), 
             searchList = [template_params],
           )
         self.cuda_module = SourceModule(kernel_code)
         self.cuda_call = self.cuda_module.get_function("vis")
         self.block_seize = (256, 1, 1)
-        if (self.type == 'global'):
+        if (self.memory_type == 'global'):
              self.cuda_call.prepare("PPP", self.block_seize)
-        if (self.type == '1dtex'):
+        if (self.memory_type == '1dtex'):
             self.cuda_call.prepare("P", self.block_seize)
         
     def cuda_get_memory(self):
         self.grid_dimensions =  (min(32, (self.vis.size+256-1) // 256 ), 1)
         self.cuda_mem = {}
-        if (self.type == 'global'):
+        if (self.memory_type == 'global'):
             self.cuda_mem['normals_gpu'] = cuda_driver.mem_alloc(self.normals.nbytes)
             cuda_driver.memcpy_htod(self.cuda_mem['normals_gpu'], self.normals)
         self.cuda_mem['design_gpu'] = self.cuda_module.get_global('design')[0]
         cuda_driver.memcpy_htod(self.cuda_mem['design_gpu'], self.design)
         self.cuda_mem['kernel_n'] = self.cuda_module.get_global('kernelN')[0]
-        if (self.type == '1dtex'):
+        if (self.memory_type == '1dtex'):
             self.put_data_to_cuda1dtex(self.normals, 'n_tex')
             self.put_data_to_cuda1dtex(self.verts, 'v_tex')
         
@@ -329,13 +350,13 @@ class CudaRender:
         
     def cuda_map(self):
         self.cuda_mem['map_vis'] = self.cuda_buffers['aVis'].map()
-        if (self.type == 'global'):
+        if (self.memory_type == 'global'):
             self.cuda_mem['map_pos'] = self.cuda_buffers['aPos'].map()
         
     def cuda_unmap(self):
         cuda_driver.Context.synchronize()
         self.cuda_mem['map_vis'].unmap()
-        if (self.type == 'global'):
+        if (self.memory_type == 'global'):
             self.cuda_mem['map_pos'].unmap()
     
     def cuda_free_memory(self):
@@ -352,7 +373,7 @@ class CudaRender:
     def cuda_call_kernal_step(self, step):
         self.start.record()
         cuda_driver.memcpy_htod(self.cuda_mem['kernel_n'],  numpy.array([step]).astype(numpy.int32))
-        getattr(self, 'cuda_call_kernel_' + self.type)()
+        getattr(self, 'cuda_call_kernel_' + self.memory_type)()
         self.end.record()
         self.end.synchronize()
         #cuda_driver.Context.synchronize() # ????/???/
@@ -386,6 +407,6 @@ class CudaRender:
                 self.calculated_vis = True
         glutMainLoop()
 
-    
-render = CudaRender()
-render.run()
+if __name__ == '__main__':
+    render = CudaRender()
+    render.run()
